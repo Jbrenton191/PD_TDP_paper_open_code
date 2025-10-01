@@ -1,0 +1,1078 @@
+---
+title: |
+  | PD Differential Gene Expression - DEG with Limma/voom
+  | Hardy project dataset
+subtitle: "Corrected identification script"
+author: 
+- name: "Guillermo Rocamora Pérez"
+  affiliation: UCL - Version 1.6
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  bookdown::html_document2:
+    figure_caption: yes
+    code_folding: show
+    theme: paper
+    highlight: haddock
+    df_print: paged
+    toc: true
+    toc depth: 3
+    toc_float: true
+    number_sections: true
+  md_document:
+    variant: markdown_github
+    toc: true
+    number_sections: true
+always_allow_html: true
+link-citations: true
+notes-after-punctuation: false
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/dependent/jhep-reports.csl
+---
+
+# JB changes
+
+Removed DESeq part and added some file saving for CSVs
+
+```{r setup, echo = T, warning = F, message = F}
+# Load libraries
+library(DESeq2)
+library(edgeR)
+library(limma)
+library(variancePartition)
+library(foreach)
+# library(clusterProfiler)
+library(org.Hs.eg.db)
+# library(ggh4x)
+library(magrittr)
+library(enrichplot)
+library(patchwork)
+library(fgsea)
+library(doParallel)
+library(tidyverse)
+
+# Define main path
+main_path <- file.path("/home/jbrenton/ASAP_Hardy_post_align_files/Final_Dataset/Hardy_Limma_Analysis_Final_version_only/")
+
+# main_path <-  here::here()
+
+# Load helper functions
+source(file.path(main_path, "R/hf_graph_and_themes.R"))
+source(file.path(main_path, "R/hf_reports.R"))
+
+# Set options
+options(dplyr.summarise.inform = FALSE)
+options(lifecycle_verbosity = "warning")
+knitr::opts_chunk$set(echo = F, warning = T, message = T, 
+                      out.width="100%", fig.align = "center", dpi = 150,
+                      fig.width = 7.2, fig.height = 7.2)
+
+```
+
+```{r setup-theme, echo = T, results = "asis", message=F}
+## Custom sciRmdTheme with increased width.
+## Please ask guillermorocamora@gmail.com for more details.
+## Download from devtools::install_github("https://github.com/guillermo1996/grpSciRmdTheme")
+if(require(grpSciRmdTheme)){
+  grpSciRmdTheme::set.theme(
+    theme = "default",
+    color = NULL,
+    header.sticky = FALSE,
+    list.group.icon = "arrow",
+    font.family = "Arial",
+    font.color = "black",
+    header.color = "darkblue",
+    figure.perc = 100
+  )
+}
+
+## Custom styles for the output html
+cat('
+<style type="text/css">
+.dataTables_scrollHeadInner{
+  width:100% !important;
+}
+.dataTables_scrollHeadInner table{
+  width:100% !important;
+}
+/*
+.code-folding-btn {
+  display: none;
+}
+*/
+h3, .h3 {
+  font-size: 22px!important;
+}
+h4, .h4 {
+  font-size: 18px!important;
+}
+h5, .h5 {
+  font-size: 16px!important;
+}
+body{
+  font-size: 13px;
+}
+
+.tocify-subheader {
+    text-indent: 15px;
+    display: none;
+    font-size: 12px;
+}
+
+.break5 .nav-tabs, .break4 .nav-tabs, .break3 .nav-tabs, .break2 .nav-tabs{
+  display: grid;
+  text-align: center;
+  font-size: 14px;
+  font-weight: bold;
+}
+.break5 .nav-tabs:before, .break4 .nav-tabs:before, .break3 .nav-tabs:before, .break2 .nav-tabs:before,
+.break5 .nav-tabs:after, .break4 .nav-tabs:after, .break3 .nav-tabs:after, .break2 .nav-tabs:after {
+  content: unset;
+}
+
+.break5 .nav-tabs{
+  grid-template-columns: repeat(5, 1fr);
+}
+.break4 .nav-tabs{
+  grid-template-columns: repeat(4, 1fr);
+}
+.break3 .nav-tabs{
+  grid-template-columns: repeat(3, 1fr);
+}
+.break2 .nav-tabs{
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.breakB5 .nav-tabs{
+  grid-template-columns: repeat(5, 1fr);
+  font-size: 12px;
+}
+.breakB4 .nav-tabs{
+  grid-template-columns: repeat(4, 1fr);
+  font-size: 12px;
+}
+.breakB3 .nav-tabs{
+  grid-template-columns: repeat(3, 1fr);
+  font-size: 12px;
+}
+.breakB2 .nav-tabs{
+  grid-template-columns: repeat(2, 1fr);
+  font-size: 12px;
+}
+
+.stop-break .nav-tabs {
+  display: flex;
+  font-size: 13px;
+  font-weight: normal;
+}
+.stop-break .nav-tabs:before,
+.stop-break .nav-tabs:after {
+  content: unset;
+}
+</style>')
+```
+
+# Background
+
+This report includes a differential gene expression analysis on the Hardy bulk dataset with [`limma` package](https://bioconductor.org/packages/release/bioc/html/limma.html), using [`voom`](https://rdrr.io/github/hdeberg/limma/man/voom.html) and [`duplicateCorrelation`](https://rdrr.io/bioc/limma/man/dupcor.html). It is created as a template and not as a report with the final results.
+
+## Load previous data
+
+The main path to run this report on the RytenLab server is at:
+
+> /home/grocamora/RytenLab-Research/18-DGE_limma_dream/
+
+This report is meant to be run after after:
+
+1. Covariate identification script: located at `Scripts/01-Hardy_covariate_identification.R` 
+2. Covariate identification report: located at `RMarkdown/02-Hardy_covariate_identification.R`
+3. PCA Analysis for outliers: located at `RMarkdown/03-PC_Analysis_Outliers.Rmd`
+
+The most relevant data to load prior to the analysis are the metadata, the salmon quantifications, a list of blacklisted genes and the outliers to remove:
+
+```{r setup-variables, echo = T, message=F}
+# Input paths
+main_path <- "/home/jbrenton/ASAP_Hardy_post_align_files/Final_Dataset/Hardy_Limma_Analysis_Final_version_only/"
+results_path <- file.path(main_path, "results")
+
+txi.salmon_path <- file.path(main_path, "data/Hardy/txi.salmon.rds")
+sample_metadata_path <- file.path(main_path, "metadata/Hardy/updated_metadata_w_PMI.csv")
+metadata_path <- file.path(results_path, "all_brain_areas_covariates.rds")
+sample_outliers_path <- file.path(results_path, "sample_outliers16.rds")
+
+blacklist_genes <- file.path(main_path, "data/blist_genes_no_vers.csv")
+gene_map_path <- file.path(main_path, "data/gencode_txid_to_geneid.txt")
+
+# Output paths
+hardy_dge_results_path <- file.path(results_path, "dge_variables/")
+
+deg_counts_output_path <- file.path(hardy_dge_results_path, "PD_Collapsed_dge_counts.rds")
+dge_all_path <- file.path(hardy_dge_results_path, "PD_Collapsed_dge_all.rds")
+
+dir.create(hardy_dge_results_path, showWarnings = F, recursive = F)
+
+# Load data
+txi.salmon <- readRDS(txi.salmon_path)
+cts <- txi.salmon$counts
+
+metadata <- loadMetadataHardy(metadata_path, sample_metadata_path)
+sample_outliers <- readRDS(sample_outliers_path)
+bxp_outliers <- sample_outliers$bxp_id_full[sample_outliers$outlier]
+
+# Load blacklisted genes
+blacklist_genes <- vroom::vroom(blacklist_genes, col_names = T, delim = ",")
+blacklist_genes <- as.vector(unlist(blacklist_genes))
+
+gencode_txid_to_geneid <- vroom::vroom(gene_map_path) %>%
+  `colnames<-`(c("tx_id", "gene_id","gene_name", "description")) %>%
+  dplyr::mutate(tx_id = sub("\\..+", "", tx_id),
+                gene_id = sub("\\..+", "", gene_id))
+
+# Recode PD to combine PD groups
+metadata %<>% mutate(pd=case_when(pd=="PD" ~ "PD",
+                                 pd=="PDD" ~ "PD",
+                                 pd=="control" ~ "control"))
+```
+
+The covariates employed to model the gene expression data are extracted from the `Covariate identification report` previously mentioned and are the following:
+
+> *GC_NC_40_59*, *PCT_UTR_BASES*, *gender*, *Total_Sequences*, *INTRONIC_BASES* and *tss_up_1kb_tag_pct*.
+
+```{r covariates}
+covariates <- c("GC_NC_40_59", "gender",
+                "tss_up_1kb_tag_pct", "PCT_UTR_BASES",
+                "Total_Sequences", "INTRONIC_BASES")
+```
+
+The experimental condition of interest in this report will be the type of PD of the samples: controls, PD without dementia (PD) and PD with dementia (PDD). We will also study two different scenarios for the brain regions: i) a collapsed brain region approach and ii) a per brain region analysis.
+
+```{r experimental_variables, echo = T}
+experimental_condition = "pd"
+experimental_region = "brain_region"
+```
+
+It is also required to fill in certain parameters that will affect the pipeline and the results:
+
++ **gene_filter_method:** different possible gene expression thresholds can be tested by modifying this variable. These are explained in the [preprocessing section](#sec-preprocess). Only possible values are *DEGreport*, *edgeR* and *cpm*. If not a valid value is provided, no gene threshold is applied.
+
+```{r report-parameters, echo = T, class.warning="bg-warning"}
+# Gene filtering approach
+gene_filter_method = "DEGreport"
+
+if(!gene_filter_method %in% c("DEGreport", "edgeR", "cpm")){
+  gene_filter_method = "None"
+  warning("not a valid gene filter method was supplied. Defaults to no threshold applied.")
+}
+```
+
+## Changelog {.tabset -}
+
+### v1.6 {-}
+
+* Updated to R v4.3.0
+
+### v1.5 {-}
+
+* Fixed covariate identification mistake.
+
+### v1.4 {-}
+
+* Updated to final decision on outliers and gene expression threshold.
+
+* Removed Gene Enrichment Analyses from this report.
+
+### v1.3 {-}
+
+* Added *GO*, *KEGG* and *REACTOME* gene enrichment analyses.
+
+* Updated default report to include 16 outliers with the `DGEreport::degFilter` threshold.
+
+### v1.2 {-}
+
+* Merged the two `limma` pipelines to combine diagnosis and brain region. Common practice in the literature.
+
+* Added *DEGreport* filter to the gene expression threhsolds.
+
+* Added a summary table of all results.
+
+### v1.1 {-}
+
+* Removed the `dream` pipeline.
+
+* Added the `limma/voom` pipeline for all tissues combined and by brain region.
+
+* Added DESeq2 analysis for reference.
+
+* Added additional study about the gene expression threshold.
+
+### v1.0 {-}
+
+* Initial report
+
+# DGE with `limma/voom` and `duplicateCorrelation`
+
+A complete tutorial on how to use `limma` can be found in their [documentation page](https://bioconductor.org/packages/devel/bioc/vignettes/limma/inst/doc/usersguide.pdf). On its core, `limma` fits a linear model to assess differential gene expression across different comparisons (or contrasts).
+
+Given that we are comparing across different tissues with samples from the same individuals, we need to treat the sample donor as a random effect. In `limma`, this is handled by the `duplicateCorrelation` function, which estimates a correlation between replicates from the same individual and gene expressions. In this approach, a single correlation value is employed genome-wide, assuming that the correlation is the same across all genes. Other alternatives, such as the `dream` package, estimate a per-gene correlation, but their study is beyond the scope of this report.
+
+Following the instructions in the official documentation and in [this tutorial about design matrices](https://bioconductor.org/packages/release/workflows/vignettes/RNAseq123/inst/doc/designmatrices.html#conversion-to-a-single-factor), the two factors of interests (PD status and brain region) are grouped into a single factor. Thus, only one model is fitted and all comparisons are extracted from it.
+
+## Preprocessing {#sec-preprocess}
+
+The first step is to generate a dataframe with the covariates of interests (`limma_covs`) and a dataframe with the covariates plus the grouping factors (`limma_covs_all`) which includes the experimental condition, the brain region and the individual ID. Outliers are also removed following the criteria explained in `PCA Analysis for outliers` report: outliers detected using PCA Z-scores and WGCNA sample connectivity Z-scores. It is important to ensure that the order of samples in the counts object is the same as the order of samples in the metadata table.
+
+```{r metadata-preparation, echo = T}
+# Ensure sample order
+metadata <- metadata[sapply(metadata$bxp_id_full, function(x) grep(x, colnames(cts))), ]
+stopifnot(all(colnames(cts) == metadata$bxp_id_full))
+
+# Covariate + grouping dataframe
+limma_covs_all <- metadata %>%
+  dplyr::select(sample_id, bxp_id_full, individual_id = case_id,
+                condition = all_of(experimental_condition),
+                region = all_of(experimental_region),
+                all_of(covariates)) %>%
+  # Filter the outliers
+  dplyr::filter(!bxp_id_full %in% bxp_outliers) %>%
+  # Generate the grouping factor as "condition_region"
+  dplyr::mutate(group = as.factor(paste0(condition, "_", region))) %>%
+  dplyr::relocate(individual_id, group) %>%
+  # Convert all characters to factor
+  dplyr::mutate(across(where(is.character), ~ as.factor(.))) %>%
+  # Scale the covariates again after the removal of outliers
+  dplyr::mutate(across(where(is.numeric), ~ scale(., center = T, scale = T))) %>%
+  tibble::column_to_rownames("bxp_id_full")
+
+# Covariates dataframe
+limma_covs <- limma_covs_all %>% dplyr::select(all_of(covariates))
+```
+
+Next, we generate the *DGE* object and apply the following preprocessing steps:
+
+1. Remove outliers.
+2. Remove blacklisted genes.
+3. Remove low expressed genes: there are currently four different options:
+    + `DEGreport`: employs the function `DEGreport::degFilter`, which requires at least one count in all samples of at least one group.
+    + `edgeR`: employs the function `edgeR::filterByExpr` which, in this situation, requires a minimum cpm of 0.11 in at least 19 samples.
+    + `cpm`: requires a minimum *cpm* of one in at least 50% of the samples.
+    + None: no gene expression filter is applied.
+4. Calculate the normalization factors.
+
+```{r dge-preprocess, echo = T, class.message="bg.success", results='hold'}
+# The author recommends to use "keep.lib.sizes = FALSE" after gene filtering,
+# but before "calcNormFactors". Source:
+# https://support.bioconductor.org/p/9136787/
+
+# Remove outliers
+cts_clean <- cts[, !colnames(cts) %in% bxp_outliers]
+
+# Generate the DGE object
+dge0 <- edgeR::DGEList(cts_clean, group = limma_covs_all$group)
+
+# Remove the blacklisted genes
+dge1 <- dge0[!rownames(dge0) %in% blacklist_genes, , keep.lib.sizes = F]
+
+# Remove low-expressed genes. We are currently testing different approaches to
+# filtering the low-expressed genes. Three valid approaches are currently
+# employed:
+#
+# i) edgeR: use the function "edgeR::filterByExpr". It currently requires a cpm
+# > 0.11 in at least 19 samples.
+#
+# ii) cpm: the same filter applied to covariate identification and PC analysis.
+# It requires a cpm or at least 1 in 50% of the samples.
+#
+# iii) DEGreport: a previously used filter by the group. It requires at least
+# one count across all samples in one of the groups.
+
+if(gene_filter_method == "DEGreport"){
+  filter_count <- DEGreport::degFilter(counts = dge1$counts,
+                                       metadata = limma_covs_all,
+                                       group = "group",
+                                       min = 1, # All samples in group must have more than expr > 0
+                                       minreads = 0)
+  isexpr <- rownames(dge1$counts) %in% rownames(filter_count)
+}else if(gene_filter_method == "edgeR"){
+  isexpr <- edgeR::filterByExpr(dge1, group = limma_covs_all$group)
+}else if(gene_filter_method == "cpm"){
+  isexpr <- rowSums(edgeR::cpm(dge1) > 1) >= 0.5*ncol(dge1)
+}else{
+  isexpr <- rep(T, nrow(dge1$counts))
+}
+
+dge2 <- dge1[isexpr, , keep.lib.sizes = F]
+
+# Calculate normalization factors - adds that column to the samples list
+dge3 <- edgeR::calcNormFactors(dge2)
+
+# Final DGE object
+dge <- dge3
+
+# Clear variables
+rm(cts_clean, dge0, dge1, dge2, dge3)
+
+message(paste0("Employed gene expression filter: ", gene_filter_method))
+```
+
+Finally, we generate the *design* object required for the `limma` pipeline. We also specify the formula that the linear model fit will use, and it must be shaped as `~ 0 + experimental_variable + covariates`. The use of intercept is advised to allow for all different comparisons. The formula employed in the analysis is the following:
+
+> Formula: ~ 0 + group + gender + GC_NC_40_59 + tss_up_1kb_tag_pct + PCT_UTR_BASES + Total_Sequences + INTRONIC_BASES
+
+```{r limma-design, echo = T}
+limma_formula <- reformulate(c(0, "group", limma_covs %>% dplyr::select(where(is.factor), where(is.numeric)) %>% colnames()))
+limma_factor_formula <- reformulate(c(0, "group", limma_covs %>% dplyr::select(where(is.factor)) %>% colnames()))
+limma_num_formula <- reformulate(limma_covs %>% dplyr::select(where(is.numeric)) %>% colnames())
+
+limma_mod <- model.matrix(limma_factor_formula, data = limma_covs_all) %>%
+  `colnames<-`(stringr::str_remove_all(colnames(.), "^group"))
+limma_design <- data.frame(limma_mod, limma_covs %>% dplyr::select(where(is.numeric)))
+```
+
+## Voom with `duplicateCorrelation`
+
+We use `voom` to obtain the weights of each gene based on the residuals of a linear fit ([more information](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29)). Since we also want to consider the correlation between samples from the same individual, we employ `duplicateCorrelation`. Both functions are applied twice based on [recommendations](https://support.bioconductor.org/p/59700/) from the developers.
+
+By default, the following code block stores and load from memory the `vobj` and `dupcor` variables. Please remove files from disk or modify the results folder to run the analysis again.
+
+```{r voom-limma, echo = T, fig.width=7.2, fig.height=4}
+vobj_path <- file.path(hardy_dge_results_path, "PD_Collapsed_vobj_limma.rds")
+dupcor_path <- file.path(hardy_dge_results_path, "PD_Collapsed_dupcor_limma.rds")
+
+if(!file_test("-f", vobj_path, dupcor_path)){
+  vobj_tmp <- limma::voom(dge, limma_design, save.plot = T)
+  dupcor_tmp <- limma::duplicateCorrelation(vobj_tmp, limma_design, block = limma_covs_all$individual_id)
+
+  vobj <- limma::voom(dge, limma_design, save.plot = T,
+                      block = limma_covs_all$individual_id, correlation = dupcor_tmp$consensus)
+  dupcor <- limma::duplicateCorrelation(vobj, limma_design, block = limma_covs_all$individual_id)
+
+
+  vobj %>% saveRDS(vobj_path)
+  dupcor %>% saveRDS(dupcor_path)
+}else{
+  vobj <- readRDS(vobj_path)
+  dupcor <- readRDS(dupcor_path)
+}
+
+plotVobj(vobj)
+```
+
+## Fit model
+
+The next step is to fit the model for each gene. We employ the function [`lmFit`](https://rdrr.io/bioc/limma/man/lmFit.html) followed by [`eBayes`](https://rdrr.io/bioc/limma/man/ebayes.html) to estimate the log-odds of differential expression and t-statistic.
+
+```{r fit-limma, echo = T}
+fit_path <- file.path(hardy_dge_results_path, "PD_Collapsed_fit_limma.rds")
+if(!file_test("-f", fit_path)){
+  fit <- limma::lmFit(vobj, limma_design, block = limma_covs_all$individual_id, correlation = dupcor$consensus)
+  fit <- limma::eBayes(fit)
+
+  fit %>% saveRDS(fit_path)
+}else{
+  fit <- readRDS(fit_path)
+}
+```
+
+## Make constrasts
+
+One of the most convenient aspects of the `limma` pipeline is the ability to accommodate arbitrary experimental complexity. The function `limma::contrasts.fit` allows for comparisons between groups to be made after the fit. To generate these *contrasts*, we need to define a contrast matrix specifing the groups to compare. It is important to notice that each positive contribution must add to 1 and each negative contribution must add to -1 (otherwise, the log fold-changes are scaled). The reference group must have a negative contribution.
+
+```{r contrast-fit, echo = T}
+contrasts_fit <- limma::makeContrasts(
+  "Collapse-PD-Control" = (PD_ACG + PD_IPL + PD_MFG + PD_MTG -
+                           control_ACG - control_IPL - control_MFG - control_MTG)/4,
+    "ACG-PD-Control" = PD_ACG - control_ACG,
+  "IPL-PD-Control" = PD_IPL - control_IPL,
+   "MFG-PD-Control" = PD_MFG - control_MFG,
+  "MTG-PD-Control" = PD_MTG - control_MTG,
+  levels = limma_design)
+
+# Fit by the contrasts
+fit_con <- limma::eBayes(limma::contrasts.fit(fit, contrasts_fit))
+```
+
+In our scenario, a total of 15 different contrasts were made: 3 different case vs. control studies (i.e. PD vs control, PDD vs control and PDD vs PD) in 5 different tissue combinations (collapsed and by brain region). The following table summarizes the contrasts:
+
+```{r contrast-table, echo = F}
+contrasts_fit %>%
+  t() %>%
+  tibble::as_tibble(rownames = "Contrast") %>%
+  tidyr::separate(col = "Contrast", into = c("Tissue", "Test"), sep = "-", extra = "merge") %>%
+  printPrettyDf(rowGroup = 0, dom = "tp")
+```
+
+# Results: Collapsed brain region
+
+In this section, we will compare the results of combining all brain regions. The generated *contrast* table is drawn below, where each coefficient is set to $1/\text{number of brain regions}$. As mentioned previously, the sign of the coefficient is important, leaving the negative contributions to the reference group.
+
+```{r collapse-contrast-plot, fig.width=13, fig.height=5, echo = F}
+variancePartition::plotContrasts(contrasts_fit[, grep("Collapse", colnames(contrasts_fit))])
+```
+
+To extract the results from the fit object, we employ a custom function that internally calls `limma::topTable` for a given coefficient (i.e. the name for the contrasts of interest in the contrasts matrix):
+
+```{r collapse-results, echo = T}
+dge_collapsed_i <- extractResultsDGE(fit_con, coef = "Collapse-PD-Control")
+
+dge_collapsed <- dplyr::bind_rows(
+  dge_collapsed_i %>% dplyr::mutate(tissue = "Collapse", test = "PD-Control"))
+```
+
+The number of differentially expressed genes obtained for each comparison is summarized in the following table:
+
+```{r collapse-dge-table, echo = F, warning=F}
+summary(limma::decideTests(fit_con)) %>%
+  .[, grep("Collapse", colnames(.))]
+
+# %>%
+  # printPrettyDf(style = "md", full_width = F)
+```
+
+## Volcano plots {.tabset .break3}
+
+Volcano plots allow for a more global view of the DGE results by showing statistical significance vs magnitude of change - i.e. log transformed p-values in the Y-axis and the log2 fold-change in the X-axis. Our requirement for significance is $p-value <= 0.05$, drawn as a red line. Every gene above the mentioned line is considered differentially expressed. The sign of the log2 fold-change specifies whether it is upregulated or downregulated. Additionally, the top most significant differentially expressed genes are named in each test.
+
+```{r collapse-volcano-plots, echo = F, fig.width = 10, fig.height = 6, results='asis'}
+# This code-chunk dynamically generates the plots for each comparison. This
+# approach results in a cleaner and more compact markdown. Thus, if a
+# modification is made to how the plots are generated, we can be certain that the
+# plots for all comparisons are identically modified.
+comparisons <- dge_collapsed$test %>% unique
+r <- foreach(i = seq_along(comparisons)) %do%{
+  comparison = comparisons[i]
+  case_name <- stringr::str_split_1(comparison, "-")[1]
+  ref_name <- stringr::str_split_1(comparison, "-")[2]
+
+  cat("### ", case_name, " vs ", ref_name, " {-}\n\n", sep = "")
+  dge_comparison <- dge_collapsed %>% dplyr::filter(test == comparison)
+
+  plot(
+    plotVolcano(dge_comparison, title = paste0(case_name, " vs ", ref_name),
+                annotate_top = 5, geneid_to_genesymbol = gencode_txid_to_geneid))
+
+  cat("\n\n")
+}
+```
+
+## Top significant genes {.tabset .break3}
+
+Here we represent the 10 most significant differentially expressed genes along with their magnitude of change and their statistical significance - i.e. log transformed p-values as the fill colour and log2 fold-change in the Y-axis.
+
+```{r collapse-top-plots, echo = F, fig.width = 10, fig.height = 4, results='asis'}
+# This code-chunk dynamically generates the plots for each comparison. This
+# approach results in a cleaner and more compact markdown. Thus, if a
+# modification is made to how the plots are generated, we can be certain that the
+# plots for all comparisons are identically modified.
+comparisons <- dge_collapsed$test %>% unique
+r <- foreach(i = seq_along(comparisons)) %do%{
+  comparison = comparisons[i]
+  case_name <- stringr::str_split_1(comparison, "-")[1]
+  ref_name <- stringr::str_split_1(comparison, "-")[2]
+
+  cat("### ", case_name, " vs ", ref_name, " {-}\n\n", sep = "")
+  dge_comparison <- dge_collapsed %>% dplyr::filter(test == comparison)
+
+  plotMostSignificantGenes(dge_comparison, title = paste0(case_name, " vs ", ref_name), 
+                           gencode_txid_to_geneid) %>%
+    plot()
+
+  cat("\n\n")
+}
+```
+
+## Mean-difference plots {.tabset .break3}
+
+The mean-difference plots are another useful tool to visualize the DGE results. Instead of showing the statistical significance (as the Volcano plot), they represent the magnitude of change against the average log-CPM expression - i.e. average log-CPM in the x-Axis and log2 fold-change in the X axis. Significant differentially expressed genes are represented both by their color and their shape:
+
+```{r collapse-MD-plots, echo = F, fig.width = 15, fig.height = 7.5, results='asis', warning=F}
+# This code-chunk dynamically generates the plots for each comparison. This
+# approach results in a cleaner and more compact markdown. Thus, if a
+# modification is made to how the plots are generated, we can be certain that the
+# plots for all comparisons are identically modified.
+comparisons <- dge_collapsed$test %>% unique
+r <- foreach(i = seq_along(comparisons)) %do%{
+  comparison = comparisons[i]
+  case_name <- stringr::str_split_1(comparison, "-")[1]
+  ref_name <- stringr::str_split_1(comparison, "-")[2]
+
+  cat("### ", case_name, " vs ", ref_name, " {-}\n\n", sep = "")
+  dge_comparison <- dge_collapsed %>% dplyr::filter(test == comparison)
+
+  plotMDcustom(dge_comparison, title = paste0(case_name, " vs ", ref_name),
+               annotate_top = 15, geneid_to_genesymbol = gencode_txid_to_geneid) %>%
+    plot()
+
+  cat("\n\n")
+}
+```
+
+# Results: By brain region
+
+```{r regions-results, echo = T}
+# Extract the results from the main fit.
+tissue_contrasts <- colnames(contrasts_fit)[-grep("Collapse", colnames(contrasts_fit))]
+dge_tissues <- lapply(tissue_contrasts, function(contrast_name){
+  tissue <- stringr::str_split_fixed(contrast_name, "-", n = 2)[1]
+  test <- stringr::str_split_fixed(contrast_name, "-", n = 2)[2]
+
+  extractResultsDGE(fit_con, coef = contrast_name) %>% dplyr::mutate(tissue = tissue, test = test)
+}) %>% dplyr::bind_rows()
+```
+
+In this section, we will compare the results for the different brain regions.
+
+<details>
+<summary>Expand to see contrast table.</summary>
+```{r regions-contrast-plot, fig.width=12, fig.height=8}
+variancePartition::plotContrasts(contrasts_fit[, -grep("Collapse", colnames(contrasts_fit))])
+```
+</details>\
+
+<details>
+<summary>Expand to see number of differentially expressed genes.</summary>
+```{r regions-dge-table, echo = F}
+tissue_table <- summary(limma::decideTests(fit_con) %>% .[, -grep("Collapse", colnames(.))]) %>%
+  t() %>% as.data.frame.matrix() %>%
+  tibble::as_tibble(rownames = "Contrast") %>%
+  tidyr::separate(col = "Contrast", into = c("Tissue", "Test"), sep = "-", extra = "merge")
+
+tissue_table[, -1] %>%
+  `colnames<-`(c("Tissue - Test", "Downregulated", "Unchanged", "Upregulated")) %>%
+  printPrettyDf(style = "md") %>%
+  kableExtra::pack_rows(index = table(tissue_table$Tissue), )
+```
+</details>\
+
+## Volcano plots {.tabset .break4}
+
+```{r regions-volcano-plots, echo = F, fig.width = 10, fig.height = 4.5, results='asis', message=F, warning=F, out.width="70%"}
+# This code-chunk dynamically generates the plots for each brain region. This
+# approach results in a cleaner and more compact markdown. Thus, if a
+# modification is made to how the plots are generated, we can be certain that the
+# plots for all tissues are identically modified.
+all_tissues <- c("ACG", "IPL", "MFG", "MTG")
+comparisons <- dge_collapsed$test %>% unique
+
+r <- foreach(i = seq_along(all_tissues)) %do%{
+  brain_region = all_tissues[i]
+
+  cat("### ", brain_region, " {.tabset .breakB3 -}\n\n", sep = "")
+
+  w1 <- plotVolcano(dge_tissues %>% dplyr::filter(test == "PD-Control", tissue == brain_region),
+                    annotate_top = 5, geneid_to_genesymbol = gencode_txid_to_geneid) +
+    # ggtitle("PD vs Control") +
+    ggtitle(bquote(underline("Volcano Plot:" ~.(brain_region))))+
+    guides(color = guide_legend(title.position = "left"))
+ 
+  plot(
+   w1
+  )
+
+  cat("\n\n")
+}
+```
+
+## Top Significant genes {.tabset .break4}
+
+```{r regions-top-plots, echo = F, fig.width = 8, fig.height = 7.2, results='asis', message=F, warning=F, out.width="70%"}
+# This code-chunk dynamically generates the plots for each brain region. This
+# approach results in a cleaner and more compact markdown. Thus, if a
+# modification is made to how the plots are generated, we can be certain that the
+# plots for all tissues are identically modified.
+all_tissues <- c("ACG", "IPL", "MFG", "MTG")
+comparisons <- dge_collapsed$test %>% unique
+
+r <- foreach(i = seq_along(all_tissues)) %do%{
+  brain_region = all_tissues[i]
+
+  cat("### ", brain_region, " {.tabset .breakB3 -}\n\n", sep = "")
+
+  w1 <- plotMostSignificantGenes(dge_tissues %>% dplyr::filter(test == "PD-Control", tissue == brain_region),
+                                 gencode_txid_to_geneid) +
+    theme(legend.position = "top", axis.title.x = element_blank(), plot.title = element_text(size = 10))
+    ggtitle(bquote(underline("Top 10 Significant Genes:" ~.(brain_region))))+
+    guides(color = guide_legend(title.position = "left")) +
+         scale_fill_gradientn(colours = c("#f7ca64", "#46bac2", "#7e62a3"),
+                           trans = "log10", guide = guide_colorbar(reverse = T, order = 1,
+                                                                   frame.colour = "black",
+                                                                   ticks.colour = "black"),
+                           name = bquote('-log'[10]*'(p'[adj]*')'),
+                           breaks = c(1.4, 2, 3, 4, 5, 6, 7),
+                           limits = c(-log10(0.05),
+                                      -log10(min(dge_tissues[dge_tissues$tissue == brain_region, "adj.P.Val", drop = T]))))+
+    theme(
+          plot.title = element_text(size = 18, margin = margin(0.5, 0, 0, 0, "cm")),
+      plot.margin = margin(-0.05, 0.1, 0, 0.1, "lines"),
+            axis.text.x = element_text(size = 7),
+            legend.margin = margin(-1, 0, -2, 0, "lines"),
+            legend.key.width = unit(50, "pt"))
+  
+
+  plot(
+    patchwork::guide_area() + (w1) +
+      patchwork::plot_layout(guides = "collect", nrow = 2, heights = c(1, 10)) +
+      patchwork::plot_annotation(title = bquote(underline("Top 10 Significant Genes:" ~.(brain_region))),
+                                 theme = theme(plot.title = element_text(size = 18, margin = margin(0.5, 0, 0, 0, "cm")))) &
+      scale_fill_gradientn(colours = c("#f7ca64", "#46bac2", "#7e62a3"),
+                           trans = "log10", guide = guide_colorbar(reverse = T, order = 1,
+                                                                   frame.colour = "black",
+                                                                   ticks.colour = "black"),
+                           name = bquote('-log'[10]*'(p'[adj]*')'),
+                           breaks = c(1.4, 2, 3, 4, 5, 6, 7),
+                           limits = c(-log10(0.05),
+                                      -log10(min(dge_tissues[dge_tissues$tissue == brain_region, "adj.P.Val", drop = T]))))
+  )
+    # &
+    #   theme(plot.margin = margin(-0.05, 0.1, 0, 0.1, "lines"),
+    #         axis.text.x = element_text(size = 7),
+    #         legend.margin = margin(-1, 0, -2, 0, "lines"),
+    #         legend.key.width = unit(50, "pt")))
+  
+  
+  # plot(w1)
+
+  cat("\n\n")
+}
+```
+
+## Mean-difference plots {.tabset .break4}
+
+```{r regions-MD-plots, echo = F, fig.width = 7.2, fig.height = 9, results='asis', message=F, warning=F, out.width="70%"}
+# This code-chunk dynamically generates the plots for each brain region. This
+# approach results in a cleaner and more compact markdown. Thus, if a
+# modification is made to how the plots are generated, we can be certain that the
+# plots for all tissues are identically modified.
+all_tissues <- c("ACG", "IPL", "MFG", "MTG")
+comparisons <- dge_collapsed$test %>% unique
+
+r <- foreach(i = seq_along(all_tissues)) %do%{
+  brain_region = all_tissues[i]
+
+  cat("### ", brain_region, " {.tabset .breakB3 -}\n\n", sep = "")
+
+   w1 <- plotMDcustom(dge_tissues %>% dplyr::filter(test == "PD-Control", tissue == brain_region),
+                     annotate_top = 10, geneid_to_genesymbol = gencode_txid_to_geneid,) +
+    ggtitle("PD vs Control") +
+    guides(fill = guide_legend(title.position = "left")) +
+    theme(axis.title.x = element_blank(), plot.title = element_text(size = 10))+
+      theme(axis.title.x = element_blank(), 
+          plot.title = element_text(size = 18, margin = margin(0.5, 0, 0, 0, "cm")), 
+          plot.margin = margin(-0.1, 0.2, 0, 0.4, "lines"),
+            axis.text.x = element_text(size = 10),
+            axis.text.y = element_text(size = 10),
+            legend.text = element_text(size = 12))
+   
+
+   
+plot(
+    patchwork::guide_area() + (w1) +
+      patchwork::plot_layout(guides = "collect", nrow = 2, heights = c(1, 7)) +
+      patchwork::plot_annotation(title = bquote(underline("Mean Difference Plot:" ~.(brain_region))),
+                                 theme = theme(plot.title = element_text(size = 18, margin = margin(0.5, 0, 0, 0, "cm"))))
+)
+    
+  cat("\n\n")
+}
+```
+
+
+# Summary of results
+
+In this section, a brief summary of the results will be presented.
+
+```{r combine-results, echo = F}
+# Combine all results into a single dataframe to store in disk.
+dge_all <- dplyr::bind_rows(
+  dge_collapsed,
+  dge_tissues) %>% dplyr::mutate(tissue = factor(tissue, levels = c("Collapse", all_tissues)),
+                test = factor(test, levels = c("PD-Control")),
+                sig_reg=factor(sig_reg))
+
+dge_all %>% saveRDS(dge_all_path)
+
+# Group by tissue, comparison (test) and method to extract the number of
+# differentially expressed genes under each sceneario.
+dge_tables <- dge_all %>% 
+  dplyr::filter(sig_reg != "Unchanged") %>% 
+  dplyr::mutate(sig_reg = droplevels(sig_reg)) %>% 
+  dplyr::group_by(tissue, test) %>% 
+  dplyr::count(sig_reg, .drop = F) %>% 
+  dplyr::arrange(tissue) %>% 
+  # tidyr::pivot_wider(id_cols = c(tissue, sig_reg, test), values_from = n) %>% 
+  dplyr::ungroup()
+
+# Since we have no DESeq2 values for the Collapse approach, set the values to
+# NA.
+# dge_tables[dge_tables$tissue == "Collapse", "DESeq2"] <- NA
+
+# Each table corresponds to a different comparison (test).
+dge_table_i <- dge_tables %>% dplyr::filter(test == "PD-Control")
+
+```
+
+## Number of differentially expressed genes {.tabset .break3}
+
+First, we can study the number of differentially expressed genes, regardless of their magnitude or direction of change:
+
+```{r dge-plot, fig.width=6, fig.height=3.5, out.width="70%"}
+# Represent the number of differentially expressed genes under each scenerio.
+#
+# Based on Regina's plot:
+# https://github.com/RHReynolds/LBD-seq-bulk-analyses/blob/main/docs/figures/plotting_functions.R#L732
+dge_all %>% 
+  dplyr::filter(sig_reg != "Unchanged") %>%
+  dplyr::group_by(tissue) %>% 
+  dplyr::count(test, .drop = F) %>% 
+  ggplot(aes(x = tissue, y = test, fill = n)) +
+  geom_tile(color = "black", show.legend = F, linewidth = 0.25) +
+  geom_text(aes(label = n, color = n > 80), size = 4, show.legend = F, fontface = "bold") +
+  scale_x_discrete(expand = expansion()) +
+  scale_y_discrete(expand = expansion(), limits = rev) +
+  scale_fill_distiller(palette = "Greys", direction = 1) +
+  scale_color_manual(values = c("black", "white")) +
+  coord_equal() +
+  labs(x = "Brain region", y = "Comparisons", title = "Number of DEGs") +
+  custom_gg_theme
+```
+
+<details>
+<summary>Expand to see proportion of upregulated/downregulated</summary>
+\
+Each tile contains the proportion of upregulated/downregulated genes. Only proportions higher than 30% are written in the tiles for clarity:
+
+```{r dge-plot-2, fig.width=8, fig.height=5, out.width="70%", echo = F}
+# Following the previous plot approach, we split each tile into the different
+# proportions of upregulated/downregulated genes. That way, we can visually
+# understand the proportion of each regulation for all scenearios.
+#
+# The steps are not trivial, and the process was based on a stackoverflow
+# response:
+# https://stackoverflow.com/questions/68774622/combining-multiple-confusion-matrices-tile-plot-with-rectangles-instead-of-til
+
+# First, we filter the results to calculate the number of DEGs for each
+# regulation.
+df <- dge_all %>% 
+  dplyr::filter(sig_reg != "Unchanged") %>%
+  dplyr::mutate(sig_reg = droplevels(sig_reg)) %>% 
+  dplyr::group_by(tissue, test) %>% 
+  dplyr::count(sig_reg, .drop = F) %>% 
+  dplyr::mutate(test = factor(test, levels = c("PD-Control")))
+
+# Extract the coordinates of each tile basec on the brain region and the
+# comparison
+df$x <- as.numeric(df$tissue)
+df$y <- as.numeric(df$test)
+
+# We need 4 points for each number. Thus, we create a identifier for each count
+# (called "repetition") and repeat each row 4 times. Each repetition of the
+# count will contain their X-Y coordinates to form a square.
+df$observation <- seq(nrow(df))
+df <- df[rep(seq(nrow(df)), each = 4), ]
+df$repetition <- rep(c(1, 2, 3, 4), nrow(df)/4)
+
+# To measure the location of the square vertices for each count, we measure the
+# proportion of each regulation and use this proportion to decide on the x
+# position of the intersect line. The y position of the squares is always
+# constant, so it does not need to vary based on the proportion.
+#
+# At the same time, we prepare the text label that will be used.
+#
+# There are probably better ways to do so (i.e. segment that splits the tiles
+# instead of drawing squares), but this works for now.
+df_plot <- df %>% 
+  dplyr::group_by(tissue, test) %>% 
+  dplyr::mutate(total = sum(n)/4) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::mutate(prop = (n/total)) %>% 
+  dplyr::mutate(polyx = case_when(sig_reg == "Significantly Upregulated" & repetition %in% c(1, 4) ~ x - 0.5,
+                                  sig_reg == "Significantly Upregulated" & repetition %in% c(2, 3) ~ x - 0.5 + prop,
+                                  sig_reg == "Significantly Downregulated" & repetition %in% c(1, 4) ~ x + 0.5 - prop,
+                                  sig_reg == "Significantly Downregulated" & repetition %in% c(2, 3) ~ x + 0.5,
+                                  T ~ x),
+                polyy = case_when(repetition %in% c(1, 2) ~ y - 0.5,
+                                  repetition %in% c(3, 4) ~ y + 0.5,
+                                  T ~ y)) %>% 
+  dplyr::mutate(x = case_when(sig_reg == "Significantly Upregulated" ~ x - 0.5 + prop/2,
+                              sig_reg == "Significantly Downregulated" ~ x + 0.5 - prop/2)) %>% 
+  dplyr::mutate(prop = ifelse(prop < 0.3, "", paste0(100*round(prop, 2), " %")),
+                sig_reg = factor(sig_reg, levels = c(levels(sig_reg), "Unchanged")))
+
+# To represent the plot, we first draw the tiles of each scenario with a white
+# background, and then draw the polygon from the coordinates previously
+# calculated. The polygon fill colour depends whether it is for upregulation and
+# downregulation. Since we have 4 repeats for each count, the text geom needs to
+# be pruned to not overlap the same text 4 times.
+ggplot(df_plot) +
+  geom_tile(aes(x = tissue, y = test), fill = "white") +
+  geom_polygon(aes(x = polyx, y = polyy, group = observation, fill = sig_reg), alpha = 0.65, color = "gray30") +
+  geom_text(aes(x = x, y = y, label = prop), angle = 0, check_overlap  = F, size = 4, 
+            data = df_plot %>% dplyr::distinct(tissue, test, x, y, prop)) +
+  scale_fill_manual(values = c("#3366FF", "#FF3333", "white"), drop = F) +
+  scale_x_discrete(expand = expansion()) +
+  scale_y_discrete(expand = expansion()) +
+  coord_equal() +
+  labs(x = "Brain region", y = "Comparisons", 
+       title = "Proportion of DEGs by regulation", fill = "Significantly Changed Genes") +
+  guides(fill = guide_legend(nrow = 3)) +
+  custom_gg_theme +
+  theme(legend.title.align = 1)
+```
+
+</details>\
+
+### PD vs Control {-}
+
+```{r table-i, echo = F, eval = T}
+# Table with the numbers of DEGs for PD vs Control
+dge_table_i %>%
+  dplyr::select(-test) %>% 
+  `colnames<-`(c("Tissue", "Regulated", "Number of DEG - Limma")) %>% 
+  printPrettyDf(style = "md") %>%
+  kableExtra::pack_rows(index = table(dge_table_i$tissue) )
+```
+
+
+
+## Common DEGs between brain regions {.tabset .break2}
+
+```{r regina-plots-1, echo = F, fig.width=10, fig.height=6}
+# The following plot is again based on Regina's paper:
+# https://github.com/RHReynolds/LBD-seq-bulk-analyses/blob/main/docs/figures/plotting_functions.R#L842C19-L842C19
+#
+# It needed to be adapted to better deal with a situation where not all
+# scenarios have DEGs, but the approach is mostly the same.
+dge_significant <- dge_all %>% 
+  dplyr::filter(sig_reg != "Unchanged") %>%
+  dplyr::filter(tissue != "Collapse") %>%
+  dplyr::mutate(sig_reg = droplevels(sig_reg), tissue = droplevels(tissue))
+
+theme_rhr_no_axis_text <-  
+    theme_bw(base_family = "Helvetica") + 
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          legend.position = "top",
+          strip.text = element_text(size = 12),
+          strip.text.y = element_text(size = 12, angle = 0),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.y = element_text(vjust = 0.6),
+          axis.title = element_text(size = 10),
+          panel.spacing = unit(0.1, "lines"))
+
+all_regulations <- levels(dge_significant$sig_reg)
+all_comparisons <- levels(dge_significant$test)
+palette = setNames(c("#00a087", "#3c5488", "#e64b35", "#4dbed9", "#6e7892"), c("Collapse", all_tissues))
+
+# Each sceneario is handled separatelly in order to facilitate the gene
+# ordering and axis labelling.
+all_plots <- foreach(i = seq_along(all_regulations)) %:%
+  foreach(j = seq_along(all_comparisons)) %do%{
+    regulation <- all_regulations[i]
+    comparison <- all_comparisons[j]
+    
+    dge_ij <- dge_significant %>% 
+      dplyr::filter(sig_reg == regulation, test == comparison) %>% 
+      dplyr::select(test, gene_id, tissue) %>% 
+      dplyr::mutate(DEG = 1, test = droplevels(test))
+    
+    ylab <- ifelse(grepl("Upregulated", regulation), "Upregulated DEG", "Downregulated DEG")
+    gene_list <- dge_ij %>% 
+      dplyr::arrange(tissue) %>% 
+      dplyr::pull(gene_id) %>% 
+      unique()
+    xlab <-paste0("Genes (n = ", length(gene_list), ")")
+    
+    dge_plot <- dge_ij %>% 
+      dplyr::mutate(gene_id = factor(gene_id, levels = gene_list)) %>% 
+      ggplot(aes(x = gene_id, y = DEG, fill = tissue)) +
+      geom_col(width = 1, alpha = 0.9) +
+      scale_y_continuous(expand = expansion()) +
+      scale_x_discrete(expand = expansion()) +
+      scale_fill_manual(values = palette) +
+      facet_grid(cols = vars(test), rows = vars(tissue), scales = "free_x", drop = F) +
+      labs(x = xlab, y = ylab) +
+      theme_rhr_no_axis_text +
+      theme(legend.position = "none")
+    
+    # if(j != 3) dge_plot <- dge_plot + theme(strip.text.y = element_blank())
+    # if(j != 1) dge_plot <- dge_plot + theme(axis.title.y = element_blank())
+    
+    return(dge_plot)
+  } %>% purrr::flatten()
+
+# We use patchwork to wrap all the generated plots into a single figure.
+patchwork::wrap_plots(all_plots)+
+  theme(plot.margin = margin(1, 0.75, 0, 0, "lines"))
+```
+
+<details>
+<summary>Expand to see results of including the collapsed approach.</summary>
+\
+
+```{r regina-plots-2, echo = F, fig.width=10, fig.height=6}
+# Additionally, I repeated the previous plot but including the "Collapse"
+dge_significant2 <- dge_all %>% 
+  dplyr::filter(sig_reg != "Unchanged") %>%
+  dplyr::mutate(sig_reg = droplevels(sig_reg), tissue = droplevels(tissue))
+
+# Each sceneario is handled separatelly in order to facilitate the gene
+# ordering and axis labelling.
+all_plots2 <- foreach(i = seq_along(all_regulations)) %:%
+  foreach(j = seq_along(all_comparisons)) %do%{
+    regulation <- all_regulations[i]
+    comparison <- all_comparisons[j]
+    
+    dge_ij <- dge_significant2 %>% 
+      dplyr::filter(sig_reg == regulation, test == comparison) %>% 
+      dplyr::select(test, gene_id, tissue) %>% 
+      dplyr::mutate(DEG = 1, test = droplevels(test))
+    
+    ylab <- ifelse(grepl("Upregulated", regulation), "Upregulated DEG", "Downregulated DEG")
+    gene_list <- dge_ij %>% 
+      dplyr::arrange(tissue) %>% 
+      dplyr::pull(gene_id) %>% 
+      unique()
+    xlab <-paste0("Genes (n = ", length(gene_list), ")")
+    
+    dge_plot <- dge_ij %>% 
+      dplyr::mutate(gene_id = factor(gene_id, levels = gene_list)) %>% 
+      ggplot(aes(x = gene_id, y = DEG, fill = tissue)) +
+      geom_col(width = 1, alpha = 0.9) +
+      scale_y_continuous(expand = expansion()) +
+      scale_x_discrete(expand = expansion()) +
+      scale_fill_manual(values = palette) +
+      facet_grid(cols = vars(test), rows = vars(tissue), scales = "free_x", drop = F) +
+      labs(x = xlab, y = ylab) +
+      theme_rhr_no_axis_text +
+      theme(legend.position = "none")
+    
+    # if(j != 3) dge_plot <- dge_plot + theme(strip.text.y = element_blank())
+    # if(j != 1) dge_plot <- dge_plot + theme(axis.title.y = element_blank())
+    
+    return(dge_plot)
+  } %>% purrr::flatten()
+
+# We use patchwork to wrap all the generated plots into a single figure.
+patchwork::wrap_plots(all_plots2)+
+  theme(plot.margin = margin(1, 0.75, 0, 0, "lines"))
+```
+
+</details>\
+
+# Output results to csv
+
+```{r csv output, eval=F, fig.height=8, fig.width=10, eval = T}
+dge_all_gene_names_added<-dge_all %>% left_join(gencode_txid_to_geneid %>% dplyr::select(-tx_id, -description) %>% distinct(gene_id, .keep_all = T), by='gene_id')
+# write_csv(x=dge_all_gene_names_added, file=file.path(results_path, "dge_all_both_limma_and_deseq.csv"))
+write_csv(x=dge_all_gene_names_added, file=file.path(results_path, "PD_Collapsed_dge_limma.csv"))
+```
+
+# Session Info
+
+<details>
+
+<summary>Click to Show</summary>
+
+```{r}
+sessioninfo::session_info()
+```
+
+</details>

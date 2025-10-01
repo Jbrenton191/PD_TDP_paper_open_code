@@ -1,0 +1,653 @@
+---
+title: "Leafcutter Analysis: Hardy Bulk"
+author: 
+- name: "Jonathan Brenton & Guillermo Rocamora Pérez"
+  affiliation: UCL - Version 1.4
+output:
+  bookdown::html_document2:
+    figure_caption: yes
+    code_folding: hide
+    theme: paper
+    highlight: haddock
+    df_print: paged
+    toc: true
+    toc depth: 3
+    toc_float: true
+    number_sections: true
+  md_document:
+    variant: markdown_github
+    toc: true
+    number_sections: true
+always_allow_html: true
+link-citations: true
+notes-after-punctuation: false
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/dependent/jhep-reports.csl
+---
+
+This is an adapated version of Guillermo's Hardy Limma analysis script.
+
+*Notes*
+Pathways with only 1 gene count in them were removed.
+
+Similarity threshold of 0.7 was used to reduce the GO pathways.
+
+# Setup
+```{r setup, echo=F, eval=T, warning=F, message=FALSE}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(magrittr)
+library(patchwork)
+library(tidyverse)
+
+knitr::opts_chunk$set(
+ echo=F, eval=T, warning=F, message=FALSE
+)
+
+
+
+
+main_path<-"~/jbrenton/ASAP_Hardy_post_align_files/Final_Dataset/leafcutter/Final_Analysis/"
+results_path<-("~/jbrenton/ASAP_Hardy_post_align_files/Final_Dataset/leafcutter/Final_Analysis/Results/")
+full_results<-readRDS("/home/jbrenton/ASAP_Hardy_post_align_files/Final_Dataset/leafcutter/Final_Analysis/Data/PD_groups_collapsed_blist_removed/full_results_list_for_default_params.RDS")
+
+sig_res_df<-full_results$all_results$significant_clusters_0.05_filter
+
+sig_res_df$Test<-sig_res_df$comparison
+
+sig_res_df %<>% mutate(brain_area=gsub(x = comparison, replacement = "\\1", pattern="^(.+)\\.[A-Z].*$")) %>%
+  mutate(comparison=gsub(x = comparison, replacement = "\\1", pattern="^.+\\.([A-Z].*)$")) %>% dplyr::select(brain_area, comparison, everything())
+
+all_clusters<-
+  full_results$all_results$cluster_significance %>% 
+    # filter for successful tests and remove clusters overlapping multiple genes
+    dplyr::filter(status == "Success", !str_detect(genes, ",")) %>%
+    tidyr::separate(cluster, into = c("chr", "cluster"), sep = ":") %>% 
+    dplyr::inner_join(full_results$all_results$intron_usage %>% 
+                        tidyr::separate(intron, into = c("chr", "start", "end", "cluster"), sep = ":")) %>% 
+    dplyr::mutate(direction_of_effect = case_when(deltapsi > 0 ~ "upregulated",
+                                                  deltapsi < 0 ~ "downregulated",
+                                                  deltapsi == 0 ~ "no_change"))
+
+universe <- all_clusters %>% 
+  distinct(genes) %>% pull()
+
+# Report parameters
+count_threshold <- 2
+go_reduce_threshold <- 0.7
+
+```
+
+```{r setup-theme, echo = F, results = "asis"}
+## Custom sciRmdTheme with increased width.
+## Please ask guillermorocamora@gmail.com for more details.
+if(require(grpSciRmdTheme)){
+  grpSciRmdTheme::set.theme(
+    theme = "default",
+    color = NULL,
+    header.sticky = FALSE,
+    list.group.icon = "arrow",
+    font.family = "Arial",
+    font.color = "black",
+    header.color = "darkblue",
+    figure.perc = 100
+  )
+}
+## Custom styles for the output html
+
+# Setting up tab bars
+cat('
+<style type="text/css">
+.dataTables_scrollHeadInner{
+  width:100% !important;
+}
+.dataTables_scrollHeadInner table{
+  width:100% !important;
+}
+/*
+.code-folding-btn {
+  display: none;
+}
+*/
+h3, .h3 {
+  font-size: 22px!important;
+}
+h4, .h4 {
+  font-size: 18px!important;
+}
+h5, .h5 {
+  font-size: 16px!important;
+}
+body{
+  font-size: 13px;
+}
+
+.tocify-subheader {
+    text-indent: 15px;
+    display: none;
+    font-size: 12px;
+}
+
+
+.break5 .nav-tabs, .break4 .nav-tabs, .break3 .nav-tabs, .break2 .nav-tabs{
+  display: grid;
+  text-align: center;
+  font-size: 14px;
+  font-weight: bold;
+}
+.break5 .nav-tabs:before, .break4 .nav-tabs:before, .break3 .nav-tabs:before, .break2 .nav-tabs:before,
+.break5 .nav-tabs:after, .break4 .nav-tabs:after, .break3 .nav-tabs:after, .break2 .nav-tabs:after {
+  content: unset;
+}
+
+.break5 .nav-tabs{
+  grid-template-columns: repeat(5, 1fr);
+}
+.break4 .nav-tabs{
+  grid-template-columns: repeat(4, 1fr);
+}
+.break3 .nav-tabs{
+  grid-template-columns: repeat(3, 1fr);
+}
+.break2 .nav-tabs{
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.breakB5 .nav-tabs{
+  grid-template-columns: repeat(5, 1fr);
+  font-size: 12px;
+}
+.breakB4 .nav-tabs{
+  grid-template-columns: repeat(4, 1fr);
+  font-size: 12px;
+}
+.breakB3 .nav-tabs{
+  grid-template-columns: repeat(3, 1fr);
+  font-size: 12px;
+}
+.breakB2 .nav-tabs{
+  grid-template-columns: repeat(2, 1fr);
+  font-size: 12px;
+}
+
+.stop-break .nav-tabs {
+  display: flex;
+  font-size: 13px;
+  font-weight: normal;
+}
+.stop-break .nav-tabs:before,
+.stop-break .nav-tabs:after {
+  content: unset;
+}
+</style>')
+```
+
+
+## Load gene info
+
+```{r load gene info, echo=F, eval=T, warning=F, message=FALSE}
+
+# Load gene info
+uniKeys <- AnnotationDbi::keys(org.Hs.eg.db, keytype = "ENSEMBL")
+cols <- c("SYMBOL", "ENTREZID", "ENSEMBL")
+cross_comp_list <- AnnotationDbi::select(org.Hs.eg.db, keys = uniKeys, columns = cols, keytype = "ENSEMBL")
+
+# Remove duplicate symbols
+non_duplicates_idx <- which(duplicated(cross_comp_list$SYMBOL) == F)
+cross_comp_list <- cross_comp_list[non_duplicates_idx, ]
+```
+
+
+```{r generate cluster dataframes, echo=F, eval=T, warning=F, message=FALSE}
+
+ universe <- AnnotationDbi::select(org.Hs.eg.db, keys=universe,
+                                    columns=c("ENTREZID"), keytype="SYMBOL")
+
+ universe<-na.omit(universe$ENTREZID)
+  
+  universe<-as.vector(universe)
+  
+  universe<-universe[which(duplicated(universe) == FALSE)]
+  
+  
+  x<-sig_res_df
+  x<-dplyr::rename(x, 'SYMBOL'=genes)
+  
+  y<-left_join(x, cross_comp_list, by="SYMBOL")
+  
+  z<-y %>% 
+    group_by(brain_area) %>% 
+    distinct(ENTREZID,.keep_all = T) %>% 
+    ungroup()
+  
+  y<-z[-which(is.na(z$ENTREZID)),]
+  
+  count_threshold <- 2
+```
+
+
+## Run cluster profiler
+
+```{r running clusterProfiler, echo=F, eval=T, warning=F, message=FALSE}
+# running clusterProfiler
+
+formula_res_merge_path <- file.path(results_path, "Final_Hardy_Leaf_formula_GO_merge.rds")
+formula_res_merge_red_path <- file.path(results_path, "Final_Hardy_Leaf_formula_GO_merge_red.rds")
+
+if(!file_test("-f", formula_res_merge_path, formula_res_merge_red_path)){
+
+formula_res_mf <- clusterProfiler::compareCluster(
+  ENTREZID ~ brain_area,
+  data = y, 
+  fun = enrichGO,
+  OrgDb = org.Hs.eg.db, ont = "MF",
+  universe = universe,
+  readable = T) %>%
+  dplyr::mutate(go_type = "MF", go_id = ID)
+
+formula_res_bp <- clusterProfiler::compareCluster(
+  ENTREZID ~ brain_area,
+  data = y, 
+  fun = enrichGO,
+  OrgDb = org.Hs.eg.db, ont = "BP",
+  universe = universe,
+    readable = T) # is empty so not trying to run mutate on empty tibble as gives error
+# %>%
+  # dplyr::mutate(go_type = "BP", go_id = ID)
+
+formula_res_cc <- clusterProfiler::compareCluster(
+  ENTREZID ~ brain_area,
+  data = y, 
+  fun = enrichGO,
+  OrgDb = org.Hs.eg.db, ont = "CC",
+  universe = universe,
+    readable = T) %>%
+  dplyr::mutate(go_type = "CC", go_id = ID)
+
+formula_res_mf_red <- formula_res_mf
+formula_res_bp_red <- formula_res_bp
+formula_res_cc_red <- formula_res_cc
+
+
+
+# New function to go with updated rrvgo - previous problem mainly with reduce sim function - both score parameter and parent_sim_score are changed
+# scores is now a character vector choice of either "size" or "uniqueness" - uniqueness is default
+# parent sim score is now divided into term uniqueness and term dissimilaity or something
+updated_go_reduce<-function (pathway_df, orgdb = "org.Hs.eg.db", threshold = 0.7, 
+                             scores = NULL, measure = "Wang") 
+{
+  if (!measure %in% c("Resnik", "Lin", "Rel", "Jiang", "Wang")) {
+    stop("Chosen measure is not one of the recognised measures, c(\"Resnik\", \"Lin\", \"Rel\", \"Jiang\", \"Wang\").")
+  }
+  if (measure == "Wang") {
+    computeIC <- FALSE
+  }
+  else {
+    computeIC <- TRUE
+  }
+  ont <- pathway_df %>% .[["go_type"]] %>% unique()
+  if (any(!ont %in% c("BP", "CC", "MF"))) {
+    stop("Column go_type does not contain the recognised sub-ontologies, c(\"BP\", \"CC\", \"MF\")")
+  }
+  go_similarity <- setNames(object = vector(mode = "list", 
+                                            length = length(ont)), nm = ont)
+  for (i in 1:length(ont)) {
+    print(stringr::str_c("Reducing sub-ontology: ", ont[i]))
+    hsGO <- GOSemSim::godata(OrgDb = orgdb, ont = ont[i], 
+                             computeIC = computeIC)
+    terms <- pathway_df %>% dplyr::filter(.data$go_type == 
+                                            ont[i]) %>% .[["go_id"]] %>% unique()
+    sim <- GOSemSim::mgoSim(GO1 = terms, GO2 = terms, semData = hsGO, 
+                            measure = measure, combine = NULL)
+    go_similarity[[i]] <- rrvgo::reduceSimMatrix(simMatrix = sim, 
+                                                 threshold = threshold, orgdb = orgdb) %>% 
+      tibble::as_tibble() %>% dplyr::rename(parent_id = .data$parent, 
+                                            parent_term = .data$parentTerm, parent_sim_score = .data$termUniqueness)
+  }
+  go_sim_df <- go_similarity %>% qdapTools::list_df2df(col1 = "go_type")
+  pathway_go_sim_df <- pathway_df %>% dplyr::inner_join(go_sim_df %>% 
+                                                          dplyr::select(.data$go_type, go_id = .data$go, contains("parent")), 
+                                                        by = c("go_type", "go_id")) %>% dplyr::arrange(.data$go_type, 
+                                                                                                       .data$parent_id, -.data$parent_sim_score)
+  return(pathway_go_sim_df)
+}
+
+# unable to reduce with one term but wanted to include it was a 1 ID term so added code to make the relevant columns
+formula_res_mf_red@compareClusterResult %<>% mutate(parent_id=go_id, 
+                                                   parent_term=Description,
+                                                   parent_sim_score=1 # used 1 as arbitrary number
+                                                   )
+# bp empty so can't run the below:
+# formula_res_bp_red@compareClusterResult %<>% updated_go_reduce(threshold = go_reduce_threshold)
+formula_res_cc_red@compareClusterResult %<>% updated_go_reduce(threshold = go_reduce_threshold)
+
+# Merge ontologies
+formula_res_merge <- clusterProfiler::merge_result(list(mf = formula_res_mf,
+                                                        bp = formula_res_bp,
+                                                        cc = formula_res_cc))
+
+
+formula_res_merge_red <- clusterProfiler::merge_result(list( # removed mf and bp since they can't be reduced
+  mf = formula_res_mf_red,
+  # bp = formula_res_bp_red,
+  cc = formula_res_cc_red))
+
+# Filter pathways
+names(formula_res_merge@compareClusterResult)[1] <- "Ontology"
+formula_res_merge@compareClusterResult %<>% dplyr::filter(Count >= count_threshold)
+
+names(formula_res_merge_red@compareClusterResult)[1] <- "Ontology"
+formula_res_merge_red@compareClusterResult %<>% dplyr::filter(Count >= count_threshold)
+
+
+  # Save results
+  formula_res_merge %>% saveRDS(formula_res_merge_path)
+  formula_res_merge_red %>% saveRDS(formula_res_merge_red_path)
+}else{
+  formula_res_merge <- readRDS(formula_res_merge_path)
+  formula_res_merge_red <- readRDS(formula_res_merge_red_path)
+}
+
+
+
+```
+
+## Number of Pathways per Brain Area Table
+
+Number of Clusters found per tissue and regulation shown below.
+
+```{r Number of Cluster Table, echo=F, eval=T, warning=F, message=FALSE}
+
+formula_res_merge@compareClusterResult %>% dplyr::count(brain_area) %>%
+  tibble::as_tibble()
+# %>%
+#   tidyr::separate(col = "Cluster", into = c("Brain_area", "Regulation"), sep = "\\.", extra = "merge")
+
+```
+
+### Pathway List
+
+```{r}
+
+formula_res_merge@compareClusterResult %>% dplyr::select(brain_area, Description) %>% arrange(brain_area)
+```
+
+
+## Functions for Hardy data
+
+The term reduction was performed across all brain areas/comparisons at the same time. Threshold was set at 0.7.
+
+```{r}
+generatePlotDataframe <- function(formula_res){
+  if("parent_term" %in% colnames(formula_res@compareClusterResult)){
+    description_names <- formula_res@compareClusterResult %>% 
+      dplyr::distinct(Description, parent_term) %>% 
+      dplyr::group_by(parent_term) %>% 
+      dplyr::count() %>%
+      dplyr::mutate(mod_description = stringr::str_to_title(paste0(parent_term, " (", n, ")"))) %>%
+      dplyr::mutate(mod_description = paste0(strwrap(mod_description, width = 50, prefix = "\n", initial = ""),
+                                             collapse = "")) %>%
+      dplyr::select(parent_term, n, mod_description)
+    
+    plot_df <- formula_res@compareClusterResult %>% 
+      # dplyr::group_by(brain_area, comparison, sig_reg, parent_term) %>%
+            dplyr::group_by(brain_area, parent_term) %>%
+      dplyr::filter(p.adjust == min(p.adjust)) %>%
+      dplyr::filter(parent_sim_score == max(parent_sim_score)) %>%
+      dplyr::ungroup() %>%
+      dplyr::left_join(description_names, by = "parent_term") %>%
+      dplyr::mutate(Description = mod_description) %>%
+      # tidyr::separate(GeneRatio, into = c("gr1", "gr2"), convert = T) %>%
+      # dplyr::mutate(geneRatio = gr1/gr2) %>%
+      dplyr::group_by(Description) %>% 
+      dplyr::mutate(min.padj = min(p.adjust)) %>% 
+      dplyr::ungroup() %>%
+      dplyr::arrange(desc(n),  brain_area, p.adjust) %>%
+      dplyr::mutate(Description = factor(Description, levels = unique(Description)),
+                    # sig_reg = factor(sig_reg, levels = c("Significantly Downregulated", "Significantly Upregulated")),
+                    # test = factor(comparison, levels = c("PD vs Control")),
+                    tissue = factor(brain_area, levels = c("ACG", "IPL", "MFG", "MTG")))
+  }else{
+    plot_df <- formula_res@compareClusterResult %>% 
+      dplyr::rowwise() %>% 
+      dplyr::mutate(Description = stringr::str_to_title(Description),
+                    Description = paste0(strwrap(Description, width = 50, prefix = "\n", initial = ""), 
+                                         collapse = "")) %>% 
+      dplyr::group_by(Description) %>% 
+      dplyr::mutate(n = n(),
+                    min.padj = min(p.adjust)) %>% 
+      dplyr::ungroup() %>%
+      dplyr::arrange(desc(n), min.padj, brain_area, p.adjust) %>%
+      dplyr::mutate(Description = factor(Description, levels = unique(Description)),
+                    # sig_reg = factor(sig_reg, levels = c("Significantly Downregulated", "Significantly Upregulated")),
+                    # test = factor(comparison, levels = c("PD vs Control")),
+                    tissue = factor(brain_area, levels = c("ACG", "IPL", "MFG", "MTG")))
+  }
+}
+
+drawPathwaysGO_tile <- function(formula_res_df, x='brain_area', x_expansion = c(0.5, 0.5), drop_facet = T, drop_x = F){
+  plot<-formula_res_df %>%
+    mutate(GeneRatio=DOSE::parse_ratio(GeneRatio)) %>%
+   ggplot(aes(x = brain_area, y = Description, fill = -log10(p.adjust))) +
+    geom_tile(color = "black", width = 1, show.legend = T) +
+    geom_hline(yintercept = seq(0.5, length(plot_df$Description)), color="black", linewidth = 0.2) +
+    geom_vline(xintercept = seq(0.5, length(plot_df[, x, T])+1), color="black", linewidth = 0.2) +
+    scale_y_discrete(limits=rev, expand = expansion(add = x_expansion)) +
+    scale_x_discrete(drop = drop_x, expand = expansion(add = x_expansion)) +
+    scale_fill_viridis_c(name = "-log"[1][0]~"(FDR)", na.value = "white", option = "cividis") +
+    coord_equal() +
+    labs(x = "", y = "GO Term", fill = "hola") +
+ # facet_wrap( ~ comparison)+
+ #                  labeller = labeller(
+ #                    sig_reg = c(
+ #                      "Significantly Upregulated" = "Up-Reg.",
+ #                      "Significantly Downregulated" = "Down-Reg."
+ #                    )
+ #                  ))+
+    # custom_gg_theme +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          strip.text.x = element_text(size = 12, face = "plain"),
+          text=element_text(size=14),
+          panel.background = element_rect(fill = "white"),
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.grid = element_blank())
+    return(plot)
+}
+
+drawPathwaysGO_dot <- function(formula_res_df, x_expansion = c(0.75, 0.75), drop_facet = T, drop_x = F){  
+    plot<-ggplot(formula_res_df %>% mutate(GeneRatio=DOSE::parse_ratio(GeneRatio)),
+       aes(brain_area, Description, size=GeneRatio, colour=p.adjust))+
+  geom_point()+
+      # facet_wrap( ~ comparison)+
+      #             labeller = labeller(
+      #               sig_reg = c(
+      #                 "Significantly Upregulated" = "Up-Reg.",
+      #                 "Significantly Downregulated" = "Down-Reg."
+      #               )
+      #             ))+
+  scale_y_discrete(limits=rev)+
+  scale_size(range = c(2,8))+
+  labs(x = "", y = "GO Term", fill = "hola") +
+  # ggtitle(label = "enrichGO: Biological Process - Upregulated")+
+  scale_color_gradientn(colours=c("#f7ca64", "#46bac2", "#7e62a3"),
+                        trans = "log10", guide=guide_colorbar(reverse=TRUE, order=1))+
+  theme(plot.title = element_text(size=18,vjust = 0.5),
+        axis.text.x=element_text(angle=70, size=10, hjust = 0.95, vjust=0.95),
+        axis.text.y = element_text(size=10),
+        strip.text.x = element_text(size = 10),
+        legend.key.size = unit(0.25, 'cm'), #change legend key size
+        legend.key.height = unit(0.25, 'cm'), #change legend key height
+        legend.key.width = unit(0.25, 'cm'), #change legend key widthsig_res
+        legend.title = element_text(size=10), #change legend title font size
+        legend.text = element_text(size=8))+
+  DOSE::theme_dose(font.size = 10)+
+  theme(axis.title.x = element_blank())
+  
+  return(plot)
+}
+```
+
+
+
+## Table of significant clusters/GO IDs
+
+Table of not-reduced and reduced pathways are shown below. They are ordered by the number of times the pathways are found across brain areas/comparisons and then adjusted p value.
+
+### Not reduced
+
+```{r go all paths no red dataframe, echo=F, eval=T, warning=F, message=FALSE,}
+
+formula_res_merge_df <-generatePlotDataframe(formula_res_merge)
+
+formula_res_merge_df %<>%
+  # tidyr::separate(col = "Cluster", into = c("Tissue", "Regulation"), sep = "\\.", extra = "merge") %>% 
+  dplyr::select(Description, brain_area, geneID, p.adjust, n, Ontology)
+
+formula_res_merge_df %<>% arrange(p.adjust)
+
+formula_res_merge_df %>% write_csv(path=file.path(results_path, "formula_res_merge_all.csv"))
+```
+
+### Reduced
+```{r go all paths red dataframe, echo=F, eval=T, warning=F, message=FALSE}
+formula_res_merge_red_df<-generatePlotDataframe(formula_res_merge_red)
+
+formula_res_merge_red_df %<>% arrange(p.adjust) %>% write_csv(path=file.path(results_path, "formula_res_merge_reduced_all.csv"))
+
+formula_res_merge_red_df %<>%
+  # tidyr::separate(col = "Cluster", into = c("Tissue", "Regulation"), sep = "\\.", extra = "merge") %>%
+  dplyr::select(Description, brain_area, geneID, p.adjust, n, Ontology)
+
+formula_res_merge_red_df 
+
+```
+
+# GO Pathways
+
+## No Reduction Performed
+```{r, fig.width=12, fig.height=12}
+formula_res_merge_df <- generatePlotDataframe(formula_res_merge)
+
+plot_df <-
+  formula_res_merge_df
+
+if(nrow(plot_df) > 0){
+  drawPathwaysGO_dot(plot_df)
+}else{
+  print("No pathways found in this scenario.")
+}
+```
+
+## Reduction Performed
+
+```{r, fig.width=15, fig.height=10}
+
+formula_res_merge_red_df<- generatePlotDataframe(formula_res_merge_red)
+plot_df <- formula_res_merge_red_df
+
+if(nrow(plot_df) > 0){
+  drawPathwaysGO_tile(plot_df)
+}else{
+  print("No pathways found in this scenario.")
+}
+```
+
+# KEGG Pathways (No reduction) 
+
+No pathways found
+
+```{r, eval=F}
+formula_res_KEGG_path <- file.path(results_path, "formula_KEGG.rds")
+
+if(!file_test("-f", formula_res_KEGG_path)){
+  formula_res_KEGG <- clusterProfiler::compareCluster(
+    ENTREZID ~ brain_area,
+    data = y, fun = enrichKEGG,
+    universe = universe,
+    organism = "hsa") 
+  # No enrichment found
+  # %>%
+    # clusterProfiler::setReadable(OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+if(!is.null(formula_res_KEGG)){
+  formula_res_KEGG@compareClusterResult %<>% dplyr::filter(Count >= count_threshold)
+
+   
+  # Save results
+  formula_res_KEGG %>% saveRDS(formula_res_KEGG_path)
+}else{
+  formula_res_KEGG <- readRDS(formula_res_KEGG_path)
+}
+
+plot_df <- generatePlotDataframe(formula_res_KEGG)
+
+if(nrow(plot_df) > 0){
+  drawPathwaysGO_tile(plot_df)
+}else{
+  print("No pathways found in this scenario.")
+}
+
+
+}else{
+  print("No pathways found in this scenario.")
+}
+```
+
+# REACTOME enrichment analysis 
+
+```{r,fig.width=10, fig.height=8}
+
+formula_res_REACTOME_path <- file.path(results_path, "formula_REACTOME.rds")
+
+if(!file_test("-f", formula_res_REACTOME_path)){
+  
+  formula_res_REACTOME <- clusterProfiler::compareCluster(
+    ENTREZID ~ brain_area, 
+    data = y, fun = "enrichPathway", 
+    universe=universe,
+    readable = T)
+  
+if(!is.null(formula_res_REACTOME)){
+  formula_res_REACTOME@compareClusterResult %<>% dplyr::filter(Count >= count_threshold)
+  
+    # Save results
+  formula_res_REACTOME %>% saveRDS(formula_res_REACTOME_path)
+  
+}else{
+  formula_res_REACTOME <- readRDS(formula_res_REACTOME_path)
+}
+
+  plot_df <- generatePlotDataframe(formula_res_REACTOME)
+
+if(nrow(plot_df) > 0){
+  drawPathwaysGO_tile(plot_df)
+}else{
+  print("No pathways found in this scenario.")
+}
+  
+  
+  
+}else{
+  print("No pathways found in this scenario.")
+}
+  
+
+
+
+
+```
+
+# Conclusions
+
+
+
+# Session Info
+
+<button class="btn btn-primary" data-toggle="collapse" data-target="#BlockName"> Show/Hide </button>  
+<div id="BlockName" class="collapse">  
+
+```{r}
+sessionInfo()
+```
+
+</div>

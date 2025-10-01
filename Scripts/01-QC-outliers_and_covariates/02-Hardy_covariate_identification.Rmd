@@ -1,0 +1,367 @@
+---
+title: | 
+  | PD Differential Gene Expression - Covariate Identification
+  | Hardy project dataset
+subtitle: "Corrected identification script"
+author: 
+- name: "Jonathan Brenton"
+- name: "Guillermo Rocamora Pérez"
+  affiliation: UCL - Version 1.4
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  bookdown::html_document2:
+    figure_caption: yes
+    code_folding: hide
+    theme: paper
+    highlight: haddock
+    df_print: paged
+    toc: true
+    toc depth: 3
+    toc_float: true
+    number_sections: true
+  md_document:
+    variant: markdown_github
+    toc: true
+    number_sections: true
+always_allow_html: true
+link-citations: true
+notes-after-punctuation: false
+csl: https://raw.githubusercontent.com/citation-style-language/styles/master/dependent/jhep-reports.csl
+---
+
+```{R setup, echo = T, message = F, warning = F}
+library(here)
+library(ggplot2)
+library(tidyverse)
+library(stringr)
+library(DESeq2)
+library(ggsci)
+library(variancePartition)
+library(patchwork)
+
+## Define main path
+main_path <- file.path("/home/grocamora/RytenLab-Research/18-DGE_limma_dream")# here::here()
+
+## Set options
+options(dplyr.summarise.inform = FALSE)
+options(lifecycle_verbosity = "warning")
+knitr::opts_chunk$set(echo = T, warning = F, message = F, out.width="100%", 
+                      fig.align = "center", dpi = 300, 
+                      fig.height = 7.2, fig.width = 7.2)
+```
+
+```{r setup-theme, echo = F, results = "asis"}
+## Custom sciRmdTheme with increased width.
+## Please ask guillermorocamora@gmail.com for more details.
+## Download from devtools::install_github("https://github.com/guillermo1996/grpSciRmdTheme")
+if(require(grpSciRmdTheme)){
+  grpSciRmdTheme::set.theme(
+    theme = "default",
+    color = NULL,
+    header.sticky = FALSE,
+    list.group.icon = "arrow",
+    font.family = "Arial",
+    font.color = "black",
+    header.color = "darkblue",
+    figure.perc = 100
+  )
+}
+
+## Custom styles for the output html
+cat('
+<style type="text/css">
+.dataTables_scrollHeadInner{
+  width:100% !important;
+}
+.dataTables_scrollHeadInner table{
+  width:100% !important;
+}
+/*
+.code-folding-btn {
+  display: none;
+}
+*/
+h3, .h3 {
+  font-size: 22px!important;
+}
+h4, .h4 {
+  font-size: 18px!important;
+}
+h5, .h5 {
+  font-size: 16px!important;
+}
+body{
+  font-size: 13px;
+}
+
+.tocify-subheader {
+    text-indent: 15px;
+    display: none;
+    font-size: 12px;
+}
+
+.break5 .nav-tabs, .break4 .nav-tabs, .break3 .nav-tabs, .break2 .nav-tabs{
+  display: grid;
+  text-align: center;
+  font-size: 14px;
+  font-weight: bold;
+}
+.break5 .nav-tabs:before, .break4 .nav-tabs:before, .break3 .nav-tabs:before, .break2 .nav-tabs:before,
+.break5 .nav-tabs:after, .break4 .nav-tabs:after, .break3 .nav-tabs:after, .break2 .nav-tabs:after {
+  content: unset;
+}
+
+.break5 .nav-tabs{
+  grid-template-columns: repeat(5, 1fr);
+}
+.break4 .nav-tabs{
+  grid-template-columns: repeat(4, 1fr);
+}
+.break3 .nav-tabs{
+  grid-template-columns: repeat(3, 1fr);
+}
+.break2 .nav-tabs{
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.breakB5 .nav-tabs{
+  grid-template-columns: repeat(5, 1fr);
+  font-size: 12px;
+}
+.breakB4 .nav-tabs{
+  grid-template-columns: repeat(4, 1fr);
+  font-size: 12px;
+}
+.breakB3 .nav-tabs{
+  grid-template-columns: repeat(3, 1fr);
+  font-size: 12px;
+}
+.breakB2 .nav-tabs{
+  grid-template-columns: repeat(2, 1fr);
+  font-size: 12px;
+}
+
+.stop-break .nav-tabs {
+  display: flex;
+  font-size: 13px;
+  font-weight: normal;
+}
+.stop-break .nav-tabs:before,
+.stop-break .nav-tabs:after {
+  content: unset;
+}
+</style>')
+```
+
+# Location:
+
+Ryten server: 
+
+> */home/grocamora/RytenLab-Research/18-DGE_limma_dream*
+
+## Changelog {.tabset -}
+
+### v1.4 {-}
+
+* Updated to R v4.3.0
+
+### v1.3 {-}
+
++ Fixed covariate identification mistake.
+
+### v1.0 {-}
+
++ Initial report.
+
+# Intro
+
+This markdown will illustrate the output of the covariates found from the script:
+
+> */home/grocamora/RytenLab-Research/18-DGE_limma_dream/Scripts/new_covariate_correction.R*
+
+It is required to run the previous script before this markdown. The script employed Aine's code from */home/MinaRyten/Aine/hardy_snrnaseq/scripts/02-identifying_covariates.R*
+
+The current approach:
+
+- Eliminated the covariates with the most overall correlations with other variables:
+    + Use three different stat tests to assess co-linearity to deal with categorical vs categorical, categorical vs numerical and numerical vs numerical.
+    + Two stat tests to assess correlations of variables with PCs.
+- Was assessed over all brain areas.
+- PCs are selected until 85% of the variance explained.
+- Changed abs value of rho x PC variance to rho^2 x PC variance to get variance explained.
+
+This approach looked for a covariate with:
+
+- A 2.5% cut off for variance explained through Spearman rho and PC correlation and the correlation is significant ($FDR>0.05$) **AND** `variancePartition` $Q3 >= 3%$
+- **OR** `variancePartition` maximum >= 75%
+
+# Plots
+
+```{R data loading, echo=T, eval=T, warning=F, message=FALSE}
+results_path <- file.path(main_path, "results/Hardy_NewCovs")
+rds.files = readRDS(file.path(results_path, "varPartCorPlots.rds"))
+```
+
+## PCA and Variance partition correlation plots 
+
+Notes about covariate assessment from Aine's script:
+
+**a:** Heatmap to show the correlation between each numerical covariate and each principle component (PC).\
+**b:** Heatmap to show the correlation between each categorical covariate and each principal component (PC).\
+**c:** Scree plot to show the variance explained by each PC.\
+**d:** Distribution plot visualising the output of `variancePartition`. This shows, for each covariate, the distribution of variance explained (%) for each gene.\
+
+```{R plots, echo=T, eval=T, warning=F, message=FALSE, fig.width = 13, fig.height = 17}
+# slots in the 02-varPartCorPlots*.rds.files:
+# 1. variancePartition distribution plot
+# 2. PCA-covariate correlation heatmap
+# 3. Prop variance explained by each PC
+# 4. distribution of covariate colinearity 
+# 5. PC-meta correlations with variance explained and variance_weighted_correlation
+
+# function to generate a 3-part figure from each rds object
+generate.fig = function(l){
+  
+  # l=readRDS("/home/MRAineFairbrotherBrowne/MinaRyten/Aine/hardy_snrnaseq/envs/02-varPart/02-varPartCorPlots_ACG_Astrocytes_annot1.rds")
+  
+  # extract varPart plot
+  vp = l[[1]]
+  # fix elements of variancePartition plot
+  vp$layers[[2]]$geom_params$outlier.alpha = 0.05
+  vp$theme$axis.text.x$size = 8
+  vp$theme$axis.text.x$angle = 90
+  
+  # extract heatmap
+  hm = l[[2]]
+  
+  # extract variance explained plot
+  ve = l[[3]]
+  ve$layers[[1]]$label.size = 0.01
+  
+  # # colinearity plots
+  # cl = l[[4]]$patches$plots[[2]] + l[[4]]$patches$plots[[1]]
+  
+  fig = ((hm) / (ve | vp)) + 
+    plot_layout(heights = c(1.5, 1.5, 1)) +
+    plot_annotation(tag_levels = 'a')
+  
+  return(fig)
+}
+
+generate.fig(rds.files)
+```
+
+## Cut offs plots for covariates
+
+Notes about cutoffs from Aine's script:
+
++ The maximum `variancePartition` value: this gives an idea of whether this covariate comprises a very large proportion of the variation of any gene(s), in which case it important to control for this
++ The 3rd quartile of the `variancePartition` distribution: this gives an idea of whether this covariate comprises a sizeable proportion of the variation of genes as a whole
++ The Spearman rho of the PC axis and covariate, weighted by the variance explained by that PC. Then for each covariate, the best (highest) weighted rho is selected. This reveals covariates that are highly correlated with PCs that explain large amounts of variance.
+
+The following visualisations aim to reveal the distributions of these three metrics, enabling cut-off setting and aid in the selection covariates that are important to control for across the datasets.
+
+```{R cut off plots, echo=T, eval=T, warning=F, message=FALSE, fig.dim=c(15, 20)}
+dat = rds.files[[5]] %>%
+  dplyr::select(meta_var, name, p, padj, rho = stat, variance_weighted_correlation, var_type) %>%
+  dplyr::arrange(-variance_weighted_correlation) %>%
+  dplyr::group_by(meta_var) %>%
+  dplyr::filter(variance_weighted_correlation>0) %>%
+  dplyr::summarise(variance_weighted_correlation = max(variance_weighted_correlation),
+                   min_p = min(p)) %>%
+  dplyr::ungroup() %>%
+  dplyr::left_join(
+    x=.,
+    y=rds.files[[5]] %>%
+      dplyr::select(meta_var, name, p, padj, rho = stat, variance_weighted_correlation, var_type),
+    by=c("meta_var", "variance_weighted_correlation")
+  ) %>%
+  dplyr::rename(pc=name) %>%
+  dplyr::arrange(-variance_weighted_correlation) %>%
+  # then calculate and join variancePartition metrics
+  dplyr::left_join(
+    x=.,
+    y=rds.files[[1]]$data %>%
+      dplyr::group_by(variable) %>%
+      dplyr::summarise(varPart.q3 = as.numeric(quantile(value)[4]),
+                       varPart.max = as.numeric(quantile(value)[5])),
+    by=c("meta_var"="variable")
+  ) %>%
+  dplyr::mutate(dataset = "Hardy_Bulk") %>%
+  dplyr::mutate(is.sig = dplyr::case_when(
+    ((p<=0.05) & (padj>0.05)) ~ "P<0.05",
+    p>0.05 ~ "NS",
+    padj<=0.05 ~ "FDR<0.05",
+    TRUE ~ ""))
+
+p0 = dat %>% 
+  dplyr::filter(var_type=="categorical") %>% 
+  ggplot(data=., aes(y=reorder(meta_var, p), x=-log10(p), colour=is.sig)) + 
+  geom_point(aes(size=as.numeric(pc)), alpha=0.7) +
+  geom_point() + 
+  scale_colour_manual(values = c("FDR<0.05" = "purple", "P<0.05" = "red", "NS"="grey")) +
+  ylab("") + 
+  xlab("-log10 P-value for K-W chi-squared test") + 
+  scale_size_identity() +
+  geom_vline(xintercept=-log10(0.05), linetype=2, alpha=0.7) +
+  theme(legend.title = element_blank())
+
+p1 = dat %>% 
+  dplyr::filter(var_type=="continuous") %>% 
+  ggplot(data=., aes(y=reorder(meta_var, p), x=variance_weighted_correlation, colour=is.sig)) + 
+  geom_point(aes(size=as.numeric(pc)), alpha=0.7) + 
+  scale_colour_manual(values = c("FDR<0.05" = "purple", "P<0.05" = "red", "NS"="grey")) +
+  ylab("") + 
+  xlab("Variance explained \n -weighted Spearman's rho") + 
+  scale_size_identity() + 
+  geom_vline(xintercept=0.025, linetype=2, alpha=0.7) +
+  theme(legend.title = element_blank())
+
+p2 = dat %>%
+  ggplot(data=., aes(y=reorder(meta_var, p), x=varPart.q3, colour=is.sig)) +
+  geom_point(size=2, alpha=0.7) +
+  scale_colour_manual(values = c("FDR<0.05" = "purple", "P<0.05" = "red", "NS"="grey")) +
+  geom_vline(xintercept=3, linetype=2, alpha=0.7) +
+  ylab("") +
+  xlab("Q3 % var explained \n (variancePartition)") + 
+  guides(colour=FALSE)
+
+p3 = dat %>%
+  ggplot(data=., aes(y=reorder(meta_var, p), x=varPart.max, colour=is.sig)) +
+  geom_point(size=2, alpha=0.7) +
+  scale_colour_manual(values = c("FDR<0.05" = "purple", "P<0.05" = "red", "NS"="grey")) +
+  geom_vline(xintercept=75, linetype=2, alpha=0.75) +
+  ylab("") +
+  xlab("Max % var explained \n (variancePartition)") +
+  guides(colour=FALSE)
+
+p0/p1/p2/p3
+```
+
+# Final decision on covariates
+
+Notes about final covariate extracted from Aine's script:
+
++ The final covariates list can be derived based on the cutoffs visualised in section 3.2 above.
++ These cut-offs were set based on the distributions observed.
++ They are designed to be stringent enough such that those covariates that drive variance both at the level of the sample and the level of the individual gene are retained.
++ To this end, cut-offs for the three metrics were used to determine which covariates are important to control for:
+    + The putative covariate must pass variance-weighted Spearman rho with PC>=0.025 + FDR<0.05 (for continuous variables) or FDR<0.05 for categorical variables AND variancePartition Q3 >= 3%.
+    + OR variancePartition maximum >= 75%.
+
+```{R Final covariates, echo=T, eval=T, warning=F, message=FALSE}
+selected_covs = dat %>% 
+  dplyr::group_by(meta_var) %>%
+  dplyr::summarise(n.PC.sig = sum((padj<=0.05 & var_type=="categorical") | 
+                                    (padj<=0.05 & variance_weighted_correlation>=0.025 & var_type=="continuous")),
+                   n.varPart.q3 = sum(varPart.q3 >= 3),
+                   n.varPart.max = sum(varPart.max >= 75)) %>% 
+  dplyr::ungroup() %>% 
+  # A: passes (FDR<0.05 & variance-weighted covariate-PC cut-off AND passes
+  # variancePartition q3 cut-off) OR (max cut-off at any point)
+  dplyr::filter((n.PC.sig >= 1 & n.varPart.q3 >= 1) | (n.varPart.max >= 1)) %>% 
+  dplyr::select(meta_var) %>% 
+  dplyr::distinct()
+
+selected_covs
+```
